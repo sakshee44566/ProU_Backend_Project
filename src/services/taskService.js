@@ -1,46 +1,14 @@
-const { db } = require('../database');
-
-const runQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function callback(err) {
-      if (err) {
-        return reject(err);
-      }
-      resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
-};
-
-const getQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) {
-        return reject(err);
-      }
-      resolve(row);
-    });
-  });
-};
-
-const allQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        return reject(err);
-      }
-      resolve(rows);
-    });
-  });
-};
+const { query } = require('../database');
 
 const createTask = async (payload) => {
   const { title, description, status = 'pending', due_date, employee_id } = payload;
-  const { id } = await runQuery(
+  const { rows } = await query(
     `INSERT INTO tasks (title, description, status, due_date, employee_id)
-     VALUES (?, ?, ?, ?, ?)`,
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
     [title, description, status, due_date, employee_id]
   );
-  return getTaskById(id);
+  return rows[0];
 };
 
 const getTasks = async (filters = {}) => {
@@ -48,33 +16,36 @@ const getTasks = async (filters = {}) => {
   const params = [];
 
   if (filters.status) {
-    conditions.push('status = ?');
     params.push(filters.status);
+    conditions.push(`status = $${params.length}`);
   }
+
   if (filters.employee_id) {
-    conditions.push('employee_id = ?');
     params.push(filters.employee_id);
+    conditions.push(`employee_id = $${params.length}`);
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  return allQuery(
-    `SELECT t.*, e.first_name || ' ' || e.last_name AS assigned_to
+  const { rows } = await query(
+    `SELECT t.*, CONCAT(e.first_name, ' ', e.last_name) AS assigned_to
      FROM tasks t
      LEFT JOIN employees e ON e.id = t.employee_id
      ${whereClause}
      ORDER BY t.id DESC`,
     params
   );
+  return rows;
 };
 
 const getTaskById = async (id) => {
-  return getQuery(
-    `SELECT t.*, e.first_name || ' ' || e.last_name AS assigned_to
+  const { rows } = await query(
+    `SELECT t.*, CONCAT(e.first_name, ' ', e.last_name) AS assigned_to
      FROM tasks t
      LEFT JOIN employees e ON e.id = t.employee_id
-     WHERE t.id = ?`,
+     WHERE t.id = $1`,
     [id]
   );
+  return rows[0];
 };
 
 const updateTask = async (id, payload) => {
@@ -83,8 +54,8 @@ const updateTask = async (id, payload) => {
 
   ['title', 'description', 'status', 'due_date', 'employee_id'].forEach((key) => {
     if (payload[key] !== undefined) {
-      fields.push(`${key} = ?`);
       params.push(payload[key]);
+      fields.push(`${key} = $${params.length}`);
     }
   });
 
@@ -93,13 +64,16 @@ const updateTask = async (id, payload) => {
   }
 
   params.push(id);
-  const { changes } = await runQuery(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`, params);
-  return changes ? getTaskById(id) : null;
+  const { rows } = await query(
+    `UPDATE tasks SET ${fields.join(', ')} WHERE id = $${params.length} RETURNING *`,
+    params
+  );
+  return rows[0] || null;
 };
 
 const deleteTask = async (id) => {
-  const { changes } = await runQuery('DELETE FROM tasks WHERE id = ?', [id]);
-  return changes > 0;
+  const res = await query('DELETE FROM tasks WHERE id = $1', [id]);
+  return res.rowCount > 0;
 };
 
 module.exports = {

@@ -1,46 +1,14 @@
-const { db } = require('../database');
-
-const runQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function runCallback(err) {
-      if (err) {
-        return reject(err);
-      }
-      resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
-};
-
-const getQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) {
-        return reject(err);
-      }
-      resolve(row);
-    });
-  });
-};
-
-const allQuery = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        return reject(err);
-      }
-      resolve(rows);
-    });
-  });
-};
+const { query } = require('../database');
 
 const createEmployee = async (payload) => {
   const { first_name, last_name, email, position, salary, hired_date } = payload;
-  const { id } = await runQuery(
+  const { rows } = await query(
     `INSERT INTO employees (first_name, last_name, email, position, salary, hired_date)
-     VALUES (?, ?, ?, ?, ?, COALESCE(?, date('now')))`,
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE))
+     RETURNING *`,
     [first_name, last_name, email, position, salary, hired_date]
   );
-  return getEmployeeById(id);
+  return rows[0];
 };
 
 const getEmployees = async (filters = {}) => {
@@ -48,21 +16,30 @@ const getEmployees = async (filters = {}) => {
   const params = [];
 
   if (filters.position) {
-    conditions.push('position = ?');
     params.push(filters.position);
+    conditions.push(`position = $${params.length}`);
   }
+
   if (filters.search) {
-    conditions.push('(first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)');
     const like = `%${filters.search}%`;
     params.push(like, like, like);
+    const baseIndex = params.length - 2;
+    conditions.push(
+      `(first_name ILIKE $${baseIndex + 1} OR last_name ILIKE $${baseIndex + 2} OR email ILIKE $${baseIndex + 3})`
+    );
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  return allQuery(`SELECT * FROM employees ${whereClause} ORDER BY id DESC`, params);
+  const { rows } = await query(
+    `SELECT * FROM employees ${whereClause} ORDER BY id DESC`,
+    params
+  );
+  return rows;
 };
 
 const getEmployeeById = async (id) => {
-  return getQuery('SELECT * FROM employees WHERE id = ?', [id]);
+  const { rows } = await query('SELECT * FROM employees WHERE id = $1', [id]);
+  return rows[0];
 };
 
 const updateEmployee = async (id, payload) => {
@@ -71,8 +48,8 @@ const updateEmployee = async (id, payload) => {
 
   ['first_name', 'last_name', 'email', 'position', 'salary', 'hired_date'].forEach((key) => {
     if (payload[key] !== undefined) {
-      fields.push(`${key} = ?`);
       params.push(payload[key]);
+      fields.push(`${key} = $${params.length}`);
     }
   });
 
@@ -81,13 +58,16 @@ const updateEmployee = async (id, payload) => {
   }
 
   params.push(id);
-  const { changes } = await runQuery(`UPDATE employees SET ${fields.join(', ')} WHERE id = ?`, params);
-  return changes ? getEmployeeById(id) : null;
+  const { rows } = await query(
+    `UPDATE employees SET ${fields.join(', ')} WHERE id = $${params.length} RETURNING *`,
+    params
+  );
+  return rows[0] || null;
 };
 
 const deleteEmployee = async (id) => {
-  const { changes } = await runQuery('DELETE FROM employees WHERE id = ?', [id]);
-  return changes > 0;
+  const res = await query('DELETE FROM employees WHERE id = $1', [id]);
+  return res.rowCount > 0;
 };
 
 module.exports = {
